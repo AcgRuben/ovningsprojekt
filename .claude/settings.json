@@ -1,0 +1,9 @@
+// I denna filen kommer alla agentens permissions att existera.
+{
+  "permissions": {
+    "allow": ["Bash(npm test)", "Bash(npm run typecheck)", "Bash(git status)", "Bash(git diff)"],
+    "ask": ["Bash (git add)", "Bash (git commit *)"],
+    // Denna här är super super viktig ->
+    "deny": ["Read(./.env)", "Bash(git push *)", "Bash(rm *"]
+  }
+}
