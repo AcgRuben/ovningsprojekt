@@ -3,11 +3,20 @@ import { Result, ok, err } from "../result";
 
 export type OrderLineInput = { product: string; quantity: number; unitPrice: number };
 
+export const OrderStatus = {
+  new: "new",
+  cancelled: "cancelled",
+} as const;
+
+// Hur länge efter beställningen kunden får avbryta den (inklusive gränsen).
+export const CANCEL_WINDOW_MINUTES = 30;
+
 export type Order = {
   id: number;
   customerId: number;
   status: string;
   discountCode: string | null;
+  createdAt: Date;
   lines: { product: string; quantity: number; unitPrice: string }[];
 };
 
@@ -63,7 +72,8 @@ export async function createOrder(
 
 export async function getOrder(orderId: number, customerId: number): Promise<Result<Order>> {
   const res = await db.query(
-    `SELECT id, customer_id AS "customerId", status, discount_code AS "discountCode"
+    `SELECT id, customer_id AS "customerId", status, discount_code AS "discountCode",
+            created_at AS "createdAt"
        FROM orders WHERE id = $1`,
     [orderId],
   );
@@ -80,4 +90,54 @@ export async function getOrder(orderId: number, customerId: number): Promise<Res
     [orderId],
   );
   return ok({ ...order, lines: lines.rows });
+}
+
+// Avbryt en egen beställning. Tidsgränsen avgörs av databasens now() i samma transaktion.
+export async function cancelOrder(orderId: number, customerId: number): Promise<Result<Order>> {
+  const client = await db.connect();
+  try {
+    await client.query("BEGIN");
+    const found = await client.query(
+      `SELECT customer_id AS "customerId", status,
+              now() - created_at <= make_interval(mins => $2) AS "withinWindow"
+         FROM orders WHERE id = $1 FOR UPDATE`,
+      [orderId, CANCEL_WINDOW_MINUTES],
+    );
+    if (found.rowCount === 0) {
+      await client.query("ROLLBACK");
+      return err("not_found", `Beställning ${orderId} finns inte.`);
+    }
+    const row = found.rows[0];
+    if (row.customerId !== customerId) {
+      await client.query("ROLLBACK");
+      return err("forbidden", "Beställningen tillhör en annan kund.");
+    }
+    if (row.status === OrderStatus.cancelled) {
+      await client.query("ROLLBACK");
+      return err("conflict", "Beställningen är redan avbruten.");
+    }
+    if (row.status !== OrderStatus.new) {
+      await client.query("ROLLBACK");
+      return err("conflict", `Beställningen kan inte avbrytas i status ${row.status}.`);
+    }
+    if (!row.withinWindow) {
+      await client.query("ROLLBACK");
+      return err(
+        "conflict",
+        `Tiden för att avbryta beställningen (${CANCEL_WINDOW_MINUTES} minuter) har gått ut.`,
+      );
+    }
+    await client.query("UPDATE orders SET status = $2 WHERE id = $1 AND status = $3", [
+      orderId,
+      OrderStatus.cancelled,
+      OrderStatus.new,
+    ]);
+    await client.query("COMMIT");
+  } catch (e) {
+    await client.query("ROLLBACK");
+    throw e;
+  } finally {
+    client.release();
+  }
+  return getOrder(orderId, customerId);
 }

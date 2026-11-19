@@ -10,7 +10,10 @@ Alla anrop utom `POST /customers` och `/health` kräver headern `X-Customer-Id` 
 | `GET /customers/me/orders` | Den inloggade kundens beställningar, nyast först. | 200, 401 |
 | `POST /orders` | Lägg en beställning. Body: `{ lines: [{ product, quantity, unitPrice }], discountCode? }`. | 201, 400, 401 |
 | `GET /orders/:id` | En egen beställning med rader. | 200, 400, 401, 403, 404 |
+| `POST /orders/:id/cancel` | Avbryt en egen beställning. Endast status `new` och högst 30 minuter efter att den lades (inklusive). Ingen body. Svarar med ordern (`status: "cancelled"`). 409 om den redan är avbruten, har annan status än `new` eller om tiden gått ut. | 200, 400, 401, 403, 404, 409 |
 | `GET /orders/:id/price` | Pris för en egen beställning: `{ net, vat, total }`. Räknas av den äldre modulen. | 200, 400, 401, 403, 404 |
+
+En beställning (`POST /orders`, `GET /orders/:id`, `POST /orders/:id/cancel`) har fälten `id`, `customerId`, `status`, `discountCode`, `createdAt` (ISO 8601) och `lines`.
 
 ## Den äldre modulen
 
