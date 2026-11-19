@@ -56,7 +56,7 @@
           },
           {
             "type": "command",
-            "command": "npm run format && npm run lint && npm run typecheck"
+            "command": "npm run lint && npm run typecheck"
           }
         ]
       }
