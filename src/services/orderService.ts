@@ -127,11 +127,14 @@ export async function cancelOrder(orderId: number, customerId: number): Promise<
         `Tiden för att avbryta beställningen (${CANCEL_WINDOW_MINUTES} minuter) har gått ut.`,
       );
     }
-    await client.query("UPDATE orders SET status = $2 WHERE id = $1 AND status = $3", [
-      orderId,
-      OrderStatus.cancelled,
-      OrderStatus.new,
-    ]);
+    const updated = await client.query(
+      "UPDATE orders SET status = $2 WHERE id = $1 AND status = $3",
+      [orderId, OrderStatus.cancelled, OrderStatus.new],
+    );
+    if (updated.rowCount !== 1) {
+      await client.query("ROLLBACK");
+      return err("conflict", "Beställningen kunde inte avbrytas eftersom den just ändrats.");
+    }
     await client.query("COMMIT");
   } catch (e) {
     await client.query("ROLLBACK");
