@@ -1,9 +1,75 @@
-// I denna filen kommer alla agentens permissions att existera.
 {
   "permissions": {
-    "allow": ["Bash(npm test)", "Bash(npm run typecheck)", "Bash(git status)", "Bash(git diff)"],
-    "ask": ["Bash (git add)", "Bash (git commit *)"],
-    // Denna här är super super viktig ->
-    "deny": ["Read(./.env)", "Bash(git push *)", "Bash(rm *"]
+    "allow": [
+      "Bash(npm test)",
+      "Bash(npm run test:legacy)",
+      "Bash(npm run lint)",
+      "Bash(npm run typecheck)",
+      "Bash(npm run format)",
+      "Bash(git status)",
+      "Bash(git diff *)",
+      "Bash(git log *)"
+    ],
+    "ask": [
+      "Bash(git commit *)",
+      "Bash(git tag *)",
+      "Bash(npm run db:reset)",
+      "Bash(npm install *)"
+    ],
+    "deny": [
+      "Read(.env)",
+      "Edit(.env)",
+      "Write(.env)",
+      "Bash(rm -rf *)",
+      "Bash(git push --force *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/memory-load.mjs"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/protect-tests.mjs"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/check-standard.mjs"
+          },
+          {
+            "type": "command",
+            "command": "npm run format && npm run lint && npm run typecheck"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/memory-save.mjs"
+          }
+        ]
+      }
+    ]
   }
 }
