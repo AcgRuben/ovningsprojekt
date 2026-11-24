@@ -26,23 +26,23 @@ def _kapa(x):
 
 
 def calc_price(order_id):
-    cur = conn.cursor()
-    cur.execute("select discount_code from orders where id = %s" % order_id)
-    rad = cur.fetchone()
-    if rad == None:
-        return None
-    kod = rad[0]
+    with conn.cursor() as cur:
+        cur.execute("select discount_code from orders where id = %s", (order_id,))
+        rad = cur.fetchone()
+        if rad is None:
+            return None
+        kod = rad[0]
 
-    cur.execute("select quantity, unit_price from order_lines where order_id = %s" % order_id)
-    summa = Decimal(0)
-    for q, p in cur.fetchall():
-        summa = summa + q * p
+        cur.execute("select quantity, unit_price from order_lines where order_id = %s", (order_id,))
+        summa = Decimal(0)
+        for q, p in cur.fetchall():
+            summa = summa + q * p
 
-    if kod:
-        cur.execute("select percent from discounts where code = '%s'" % kod)
-        r = cur.fetchone()
-        if r:
-            summa = summa - summa * r[0] / 100
+        if kod:
+            cur.execute("select percent from discounts where code = %s", (kod,))
+            r = cur.fetchone()
+            if r:
+                summa = summa - summa * r[0] / 100
 
     net = _kapa(summa)
     vat = _kapa(net * MOMS / 100)
@@ -59,7 +59,10 @@ def calc_price(order_id):
 
 
 if __name__ == "__main__":
-    p = calc_price(int(sys.argv[1]))
+    try:
+        p = calc_price(int(sys.argv[1]))
+    finally:
+        conn.close()
     if p is None:
         print(json.dumps({"error": "finns inte"}))
         sys.exit(1)

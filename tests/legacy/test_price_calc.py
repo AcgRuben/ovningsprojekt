@@ -29,20 +29,28 @@ class FakeCursor:
         self.db = db
         self._result = None
 
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False
+
+    def close(self):
+        self.db.closed_cursors += 1
+
     def execute(self, sql, params=None):
-        self.db.executed.append(sql)
-        m = re.match(r"select discount_code from orders where id = (\d+)$", sql)
-        if m:
-            oid = int(m.group(1))
+        self.db.executed.append((sql, params))
+        p = params or ()
+        if sql == "select discount_code from orders where id = %s":
+            oid = int(p[0])
             self._result = [(self.db.orders[oid],)] if oid in self.db.orders else None
             return
-        m = re.match(r"select quantity, unit_price from order_lines where order_id = (\d+)$", sql)
-        if m:
-            self._result = list(self.db.lines.get(int(m.group(1)), []))
+        if sql == "select quantity, unit_price from order_lines where order_id = %s":
+            self._result = list(self.db.lines.get(int(p[0]), []))
             return
-        m = re.match(r"select percent from discounts where code = '(.*)'$", sql, re.S)
-        if m:
-            pct = self.db.discounts.get(m.group(1))
+        if sql == "select percent from discounts where code = %s":
+            pct = self.db.discounts.get(p[0])
             self._result = [] if pct is None else [(pct,)]
             return
         raise AssertionError("Oväntad SQL: %r" % sql)
@@ -60,9 +68,14 @@ class FakeConn:
         self.lines = {}       # id -> [(quantity, Decimal unit_price)]
         self.discounts = {}   # kod -> percent (heltal). Giltighetsdatum finns inte har.
         self.executed = []
+        self.closed_cursors = 0
+        self.closed = False
 
     def cursor(self):
         return FakeCursor(self)
+
+    def close(self):
+        self.closed = True
 
 
 def _load_module():
@@ -166,7 +179,7 @@ def test_utgangen_rabattkod_ignoreras_inte_giltighet_lases_aldrig(pc):
     add_order(pc, 1045, [(1, "100.00")], code="GAMMAL15")
     pc.conn.discounts["GAMMAL15"] = 15
     assert str(pc.calc_price(1045).net) == "85"
-    assert not any("valid_" in s for s in pc.conn.executed)
+    assert not any("valid_" in s for s, _ in pc.conn.executed)
 
 
 def test_okand_rabattkod_ger_tyst_ingen_rabatt(pc):
@@ -178,7 +191,7 @@ def test_okand_rabattkod_ger_tyst_ingen_rabatt(pc):
 def test_tom_rabattkod_slar_inte_upp_rabatt(pc):
     add_order(pc, 1051, [(1, "100.00")], code="")
     pc.calc_price(1051)
-    assert not any("from discounts" in s for s in pc.conn.executed)
+    assert not any("from discounts" in s for s, _ in pc.conn.executed)
 
 
 def test_saknad_order_ger_none(pc):
@@ -229,23 +242,31 @@ def test_resultat_ar_decimal_inte_float(pc):
     assert all(isinstance(v, Decimal) for v in (p.net, p.vat, p.total))
 
 
-def test_apostrof_i_rabattkod_hamnar_orad_i_sql_injektionsbrist(pc):
-    # BUGG (codemap 8 #1): koden interpoleras med % i SQL-strangen, ingen escaping.
+def test_apostrof_i_rabattkod_skickas_som_parameter_inte_i_sql(pc):
+    # Refaktorerat (steg 1): tidigare SQL-injektionsbrist (codemap 8 #1) ar atgardad.
     add_order(pc, 1070, [(1, "100.00")], code="x' OR '1'='1")
     p = pc.calc_price(1070)
-    sql = pc.conn.executed[-1]
-    assert sql == "select percent from discounts where code = 'x' OR '1'='1'"
+    sql, params = pc.conn.executed[-1]
+    assert sql == "select percent from discounts where code = %s"
+    assert params == ("x' OR '1'='1",)
     assert str(p.net) == "100"
 
 
-def test_sql_ar_strangformaterad_inte_parametriserad(pc):
+def test_sql_ar_parametriserad(pc):
     add_order(pc, 1071, [(1, "1.00")], code="VAR10")
     pc.calc_price(1071)
     assert pc.conn.executed == [
-        "select discount_code from orders where id = 1071",
-        "select quantity, unit_price from order_lines where order_id = 1071",
-        "select percent from discounts where code = 'VAR10'",
+        ("select discount_code from orders where id = %s", (1071,)),
+        ("select quantity, unit_price from order_lines where order_id = %s", (1071,)),
+        ("select percent from discounts where code = %s", ("VAR10",)),
     ]
+
+
+def test_cursor_stangs_efter_berakning_och_vid_saknad_order(pc):
+    add_order(pc, 1072, [(1, "1.00")])
+    pc.calc_price(1072)
+    pc.calc_price(9999)
+    assert pc.conn.closed_cursors == 2
 
 
 # --------------------------------------------------------------- loggning
