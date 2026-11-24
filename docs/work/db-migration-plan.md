@@ -21,9 +21,9 @@ Varje steg är ett eget deployment som är bakåtkompatibelt med både föregåe
 |---|---|---|---|
 | A0 | Förkontroll | Kör kontrollfrågor (se nedan). Ändrar inget. | Inget att backa |
 | A1 | Expand | `CREATE INDEX CONCURRENTLY idx_order_lines_order_id ON order_lines(order_id)` och `idx_orders_customer_id`. | Ja, `DROP INDEX`. Ingen dataförlust. |
-| A2 | Expand | `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... NOT VALID` för `order_lines.order_id → orders.id`, `orders.customer_id → customers.id`, `orders.discount_code → discounts.code`. Och `CHECK (percent BETWEEN 0 AND 100) NOT VALID` på `discounts`. NOT VALID kontrollerar bara nya skrivningar. | Ja, `DROP CONSTRAINT`. Ingen dataförlust. |
-| A3 | Backfill | Åtgärda befintliga överträdelser som A0 hittade. För orphan-rader: exportera dem först till `_orphans_backup_<datum>`, sedan beslut (ta bort eller peka om). Rabattkod som saknas sätts till NULL **efter** beslut med ekonomi. | Ja, om backup-tabellen finns kvar: återinför raderna. **Utan backup är radering inte backbar.** |
-| A4 | Validate | `ALTER TABLE ... VALIDATE CONSTRAINT ...` (tar bara `SHARE UPDATE EXCLUSIVE`, blockerar inte skrivningar). | Ja, constraint blir kvar som NOT VALID om man vill, eller `DROP CONSTRAINT`. |
+| A2 | Expand | `ALTER TABLE ... ADD CONSTRAINT ... FOREIGN KEY ... NOT VALID` för `order_lines.order_id → orders.id`, `orders.customer_id → customers.id`, `orders.discount_code → discounts.code`. Och `CHECK (percent BETWEEN 0 AND 100) NOT VALID` på `discounts`. NOT VALID kontrollerar bara nya skrivningar. | Ja, `DROP CONSTRAINT`. Ingen dataförlust. Förutsätter att appen redan fångar 23503/23514 (se nedan). |
+| A3 | Backfill | Åtgärda befintliga överträdelser som A0 hittade. För orphan-rader: exportera dem först till `_orphans_backup_<datum>`, sedan beslut (ta bort eller peka om). Rabattkod som saknas sätts till NULL **efter** beslut med ekonomi. | Bara med backup: spara **både** raderade rader och originalvärden för ändrade rader (`orders.discount_code`, `orders.customer_id`) i `_orphans_backup_<datum>` innan något ändras. Då kan båda återställas. **Utan backup går varken radering eller omskrivning att backa.** |
+| A4 | Validate | `ALTER TABLE ... VALIDATE CONSTRAINT ...` (tar bara `SHARE UPDATE EXCLUSIVE`, blockerar inte skrivningar). | Ja, `DROP CONSTRAINT` (en validerad constraint kan inte sättas tillbaka till NOT VALID, bara tas bort och läggas till på nytt). Ingen dataförlust. |
 | A5 | Contract | Efter en release utan constraintfel: ta bort `_orphans_backup_*`. | **Nej** efter att backupen är borta. Gör bara efter godkännande. |
 
 Förkontroll A0:
@@ -37,24 +37,24 @@ SELECT o.id, o.discount_code FROM orders o
 SELECT code, percent FROM discounts WHERE percent NOT BETWEEN 0 AND 100;
 ```
 
-Appen behöver inga ändringar för A, bortsett från att skrivningar som bryter en constraint nu ger fel (hanteras som `internal` tills de fångas specifikt).
+**Appen behöver ändras före A2:** `pg` kastar vid constraintbrott och tjänstelagret får inte kasta. Tjänsterna måste fånga SQLSTATE `23503` (FK) och `23514` (CHECK) och returnera `err("invalid_input", ...)`, t.ex. för okänd rabattkod i `POST /orders`. Det är ett beteendebyte (400) och ska in i `docs/api.md` när det görs.
 
 ## Del B: Persistera pris (`order_price_snapshots`)
 
 | Steg | Fas | Åtgärd | Backa? |
 |---|---|---|---|
-| B1 | Expand | `CREATE TABLE order_price_snapshots (id BIGSERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), net NUMERIC(10,2) NOT NULL, vat NUMERIC(10,2) NOT NULL, total NUMERIC(10,2) NOT NULL, calculated_at TIMESTAMPTZ NOT NULL DEFAULT now())` och index på `(order_id, calculated_at DESC)`. Ingen app läser eller skriver tabellen än. | Ja, `DROP TABLE`. Ingen dataförlust (tabellen är tom). |
-| B2 | Dual-write | `price_calc.py` skriver en snapshot-rad **utöver** filloggen i samma `calc_price`. Skrivfel i snapshot loggas men stoppar inte beräkningen (samma princip som `_logga`). Parametriserad SQL. | Ja, deploya föregående appversion. Redan skrivna snapshot-rader är harmlösa och kan ligga kvar eller tas bort. Ingen förlust i befintliga tabeller. |
-| B3 | Backfill | Räkna om priset för historiska betalda/skickade ordrar med den **orörda** `calc_price` och skriv snapshots (markera med `calculated_at = orders.created_at` eller en flagga). Körs i batchar, idempotent (hoppa över order som har snapshot). Rabatter utan giltighetskontroll ger samma belopp som idag. | Ja, `DELETE FROM order_price_snapshots WHERE <backfill-markering>`. Ingen förlust i källdata. |
+| B1 | Expand | `CREATE TABLE order_price_snapshots (id BIGSERIAL PRIMARY KEY, order_id INTEGER NOT NULL REFERENCES orders(id), net NUMERIC(10,2) NOT NULL, vat NUMERIC(10,2) NOT NULL, total NUMERIC(10,2) NOT NULL, calculated_at TIMESTAMPTZ NOT NULL DEFAULT now(), source TEXT NOT NULL DEFAULT 'live' CHECK (source IN ('live','backfill')))` och index på `(order_id, calculated_at DESC)`. Ingen app läser eller skriver tabellen än. | Ja, `DROP TABLE`, **men bara så länge B2 inte är deployat**. Efter B2 innehåller tabellen snapshots som då går förlorade (de kan räknas om via B3, så förlusten är återskapbar men inte noll). |
+| B2 | Dual-write | `price_calc.py` skriver en snapshot-rad **utöver** filloggen i samma `calc_price`. Skrivfel i snapshot loggas men stoppar inte beräkningen (samma princip som `_logga`). Parametriserad SQL. **Idempotens:** `calc_price` körs även vid varje `GET /orders/:id/price` och vid omkörning av nattrapporten, så en naiv skrivning ger en rad per läsning. Skriv bara en ny snapshot om beloppen skiljer sig från senaste snapshot för ordern, eller flytta skrivningen till statusbytet till `paid`. Välj före B2. | Ja, deploya föregående appversion. Redan skrivna snapshot-rader är harmlösa och kan ligga kvar eller tas bort. Ingen förlust i befintliga tabeller. |
+| B3 | Backfill | Räkna om priset för historiska betalda/skickade ordrar med den **orörda** `calc_price` och skriv snapshots (markera med `source = 'backfill'`). Körs i batchar, idempotent (hoppa över order som har snapshot). Rabatter utan giltighetskontroll ger samma belopp som idag. | Ja, `DELETE FROM order_price_snapshots WHERE source = 'backfill'`. Ingen förlust i källdata. |
 | B4 | Verifiera | Jämför för ett urval att senaste snapshot = live `calc_price` (karakteriseringstesterna är facit). Kör nattrapporten mot både gamla och nya källan. Avvikelse stoppar planen. | Inget att backa |
 | B5 | Byt läsning | Nattrapporten läser summa från snapshots (med fallback till `calc_price` om snapshot saknas). API:t räknar fortfarande live. Bakom flagga/miljövariabel. | Ja, stäng av flaggan. |
-| B6 | Contract | Ta bort filloggningen (`_logga`, `LOGG`, `price_calc.log`) när snapshots har varit stabila en hel månadsrapport. | Koden: ja via git revert. **Loggfilens historik: nej** om filen raderas, så arkivera den först. |
+| B6 | Contract | Ta bort filloggningen (`_logga`, `LOGG`, `price_calc.log`) när snapshots har varit stabila en hel månadsrapport. **Kräver ett explicit beslut:** karakteriseringstesterna som låser loggbeteendet (`test_loggrad_*`, `test_varje_berakning_appendar_*`, `test_loggfel_sluks_*`) måste då tas bort eller skrivas om, och CLAUDE.md förbjuder att ta bort tester utan beslut. | Koden: ja via git revert. **Loggfilens historik: nej** om filen raderas, så arkivera den först. |
 | B7 | Contract | Ta bort fallback-vägen i nattrapporten. | Ja via git revert. |
 
 ## Sammanfattning: vad kan backas utan dataförlust
 
-- **Fullt bakbara utan förlust:** A1, A2, A4, B1, B2, B4, B5, B7.
-- **Bakbara om en backup finns:** A3 (orphan-export), B3 (backfill-markering).
+- **Fullt bakbara utan förlust:** A1, A2, A4, B2, B4, B5, B7. B1 bara före B2.
+- **Bakbara om en backup finns:** A3 (export av både raderade och ändrade rader). B3 är bakbar tack vare `source = 'backfill'`.
 - **Inte bakbara efter genomförande:** A5 (radera backup) och radering av `price_calc.log` i B6. Båda kräver explicit godkännande och arkivering först.
 
 Ett steg flyttas aldrig framåt förrän föregående steg har varit i drift utan problem under minst en release.

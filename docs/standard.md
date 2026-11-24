@@ -14,7 +14,7 @@ Teamets regler för koden i det här projektet. De står här i ord. Ingen av de
 ## Fel
 - Tjänstelagret (`src/services/`) kastar inte fel för förväntade fall. Det returnerar `Result` med `ok(värde)` eller `err(kod, meddelande)` från `src/result.ts`.
 - Routes översätter fel till HTTP med `sendResult` eller `sendError` från `src/http.ts`. Alla felsvar har formen `{ "error": { "code": "...", "message": "..." } }`.
-- Statuskoder: 400 ogiltig indata, 401 inte inloggad, 403 inte din resurs, 404 finns inte, 409 konflikt.
+- Statuskoder: 400 ogiltig indata, 401 inte inloggad, 403 inte din resurs, 404 finns inte, 409 konflikt, 500 internt fel (`internal`).
 - En sökning som inte hittar något returnerar 200 och en tom lista.
 
 ## Behörighet
