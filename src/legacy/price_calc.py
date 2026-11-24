@@ -95,11 +95,13 @@ def main(argv: Sequence[str]) -> int:
     try:
         order_id = int(argv[1])
     except (IndexError, ValueError):
+        conn.close()
         print(json.dumps({"error": "ogiltigt order-id"}))
         return 2
     try:
         p = calc_price(order_id)
-    except Exception:  # DB-fel m.m. -> internt fel, ingen stacktrace pa stdout
+    except Exception as e:  # DB-fel m.m. -> internt fel, ingen stacktrace pa stdout
+        print(type(e).__name__, file=sys.stderr)  # bara klassnamn, inget som kan vara PII
         print(json.dumps({"error": "internt fel"}))
         return 2
     finally:

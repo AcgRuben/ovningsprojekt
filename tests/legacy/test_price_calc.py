@@ -363,3 +363,15 @@ def test_main_saknad_order_ger_exit_1_och_stanger_anslutning(pc, capsys):
     assert pc.main(["price_calc.py", "424242"]) == 1
     assert json.loads(capsys.readouterr().out) == {"error": "finns inte"}
     assert pc.conn.closed is True
+
+
+def test_main_ogiltigt_id_stanger_anslutningen_och_db_fel_skriver_klassnamn_pa_stderr(pc, capsys, monkeypatch):
+    assert pc.main(["price_calc.py", "abc"]) == 2
+    assert pc.conn.closed is True
+    pc.conn = FakeConn()
+    def boom(_id):
+        raise RuntimeError("hemligt@example.com")
+    monkeypatch.setattr(pc, "calc_price", boom)
+    pc.main(["price_calc.py", "1"])
+    err = capsys.readouterr().err
+    assert err.strip() == "RuntimeError"  # klassnamn, aldrig meddelandet

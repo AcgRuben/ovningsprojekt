@@ -11,11 +11,22 @@ const TIMEOUT_MS = 10_000;
 // Kontrakt mot price_calc.py (CLI):
 //   exit 0 + stdout {"net","vat","total"}  -> pris
 //   exit 1 + stdout {"error":"finns inte"} -> ordern finns inte (not_found)
-//   övrigt (exit 2, timeout, ogiltig JSON)  -> internal
+//   övrigt (exit 1 utan payload, exit 2, timeout, ogiltig JSON) -> internal
 function isPrice(v: unknown): v is Price {
   if (typeof v !== "object" || v === null) return false;
   const p = v as Record<string, unknown>;
   return typeof p.net === "string" && typeof p.vat === "string" && typeof p.total === "string";
+}
+
+// Python avslutar med exit 1 även vid ohanterade undantag, så exit 1 räcker inte:
+// payloaden måste också vara {"error":"finns inte"}.
+function isNotFound(stdout: string): boolean {
+  try {
+    const v: unknown = JSON.parse(stdout);
+    return typeof v === "object" && v !== null && (v as { error?: unknown }).error === "finns inte";
+  } catch {
+    return false;
+  }
 }
 
 // Brygga till den äldre prisberäkningen i Python. Allt pris räknas fortfarande där.
@@ -27,7 +38,7 @@ export function calcPrice(orderId: number): Promise<Result<Price>> {
       { env: process.env, timeout: TIMEOUT_MS },
       (error, stdout) => {
         if (error) {
-          if ((error as ExecFileException).code === 1) {
+          if ((error as ExecFileException).code === 1 && isNotFound(stdout)) {
             resolve(err("not_found", `Beställning ${orderId} finns inte.`));
           } else {
             resolve(err("internal", `Pris för beställning ${orderId} kunde inte räknas.`));
