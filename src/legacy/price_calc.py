@@ -2,8 +2,12 @@
 # prisberakning for ordrar. skriven 2019, flyttad hit fran gamla admin-systemet.
 # OBS rör inte avrundningen, ekonomi har stämt av mot den.
 
+from __future__ import annotations
+
 import os, sys, json, datetime
 from decimal import Decimal
+from typing import Any, Optional, Sequence
+
 import psycopg
 
 DB = os.environ.get("DATABASE_URL", "postgresql://postgres:postgres@localhost:5432/butik")
@@ -14,20 +18,24 @@ LOGG = os.path.join(os.path.dirname(__file__), "price_calc.log")
 
 
 class Pris:
-    def __init__(self, net, vat, total):
+    net: Decimal
+    vat: Decimal
+    total: Decimal
+
+    def __init__(self, net: Decimal, vat: Decimal, total: Decimal) -> None:
         self.net = net
         self.vat = vat
         self.total = total
 
 
-def _kapa(x):
+def _kapa(x: Decimal) -> Decimal:
     # två decimaler
     return Decimal(int(x * 100)) / 100
 
 
 # --- databasatkomst (inga berakningar) -------------------------------------
 
-def hamta_order(cur, order_id):
+def hamta_order(cur: Any, order_id: int) -> Optional[tuple[Optional[str], list[tuple[int, Decimal]]]]:
     """Returnerar (rabattkod, [(antal, styckpris), ...]) eller None om ordern saknas."""
     cur.execute("select discount_code from orders where id = %s", (order_id,))
     rad = cur.fetchone()
@@ -37,7 +45,7 @@ def hamta_order(cur, order_id):
     return rad[0], cur.fetchall()
 
 
-def hamta_rabatt_procent(cur, kod):
+def hamta_rabatt_procent(cur: Any, kod: str) -> Optional[int]:
     """Returnerar rabatt i procent for koden, eller None om den saknas."""
     cur.execute("select percent from discounts where code = %s", (kod,))
     r = cur.fetchone()
@@ -46,7 +54,7 @@ def hamta_rabatt_procent(cur, kod):
 
 # --- ren prisberakning (ingen I/O) ------------------------------------------
 
-def berakna_pris(rader, rabatt_procent):
+def berakna_pris(rader: Sequence[tuple[int, Decimal]], rabatt_procent: Optional[int]) -> Pris:
     summa = Decimal(0)
     for q, p in rader:
         summa = summa + q * p
@@ -59,7 +67,7 @@ def berakna_pris(rader, rabatt_procent):
 
 # --- loggning ----------------------------------------------------------------
 
-def _logga(order_id, total):
+def _logga(order_id: int, total: Decimal) -> None:
     try:
         with open(LOGG, "a", encoding="utf-8") as f:
             f.write("%s %s %s\n" % (datetime.datetime.now().isoformat(), order_id, total))
@@ -68,7 +76,8 @@ def _logga(order_id, total):
         pass
 
 
-def calc_price(order_id):
+def calc_price(order_id: int) -> Optional[Pris]:
+    """Returnerar Pris, eller None om ordern saknas. Kastar vid DB-fel."""
     with conn.cursor() as cur:
         order = hamta_order(cur, order_id)
         if order is None:
@@ -81,12 +90,26 @@ def calc_price(order_id):
     return pris
 
 
-if __name__ == "__main__":
+def main(argv: Sequence[str]) -> int:
+    """CLI-kontrakt mot legacyPrice.ts: 0=pris, 1=order saknas, 2=ogiltig indata/internt fel."""
     try:
-        p = calc_price(int(sys.argv[1]))
+        order_id = int(argv[1])
+    except (IndexError, ValueError):
+        print(json.dumps({"error": "ogiltigt order-id"}))
+        return 2
+    try:
+        p = calc_price(order_id)
+    except Exception:  # DB-fel m.m. -> internt fel, ingen stacktrace pa stdout
+        print(json.dumps({"error": "internt fel"}))
+        return 2
     finally:
         conn.close()
     if p is None:
         print(json.dumps({"error": "finns inte"}))
-        sys.exit(1)
+        return 1
     print(json.dumps({"net": str(p.net), "vat": str(p.vat), "total": str(p.total)}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

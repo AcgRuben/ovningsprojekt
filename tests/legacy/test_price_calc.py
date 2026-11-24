@@ -311,7 +311,9 @@ def test_cli_skriver_json_med_strangar_och_exit_0(pc, monkeypatch, capsys):
     main_block = src.split('if __name__ == "__main__":')[1]
     body = "\n".join(l[4:] if l.startswith("    ") else l for l in main_block.splitlines())
     ns = dict(pc.__dict__, __name__="__main__")
-    exec(body, ns)
+    with pytest.raises(SystemExit) as e:
+        exec(body, ns)
+    assert e.value.code == 0
     out = json.loads(capsys.readouterr().out)
     assert out == {"net": "950", "vat": "237.5", "total": "1187.5"}
 
@@ -338,3 +340,26 @@ def test_berakna_pris_ar_ren_och_ger_samma_trunkering(pc):
 def test_berakna_pris_utan_rabatt_och_utan_rader(pc):
     p = pc.berakna_pris([], None)
     assert (str(p.net), str(p.vat), str(p.total)) == ("0", "0", "0")
+
+
+# ------------------------------------- steg 3: felkontrakt mot legacyPrice.ts
+
+def test_main_ogiltigt_id_ger_exit_2(pc, capsys):
+    assert pc.main(["price_calc.py", "abc"]) == 2
+    assert json.loads(capsys.readouterr().out) == {"error": "ogiltigt order-id"}
+    assert pc.main(["price_calc.py"]) == 2
+
+
+def test_main_db_fel_ger_exit_2_utan_stacktrace(pc, capsys, monkeypatch):
+    def boom(_id):
+        raise RuntimeError("db nere")
+    monkeypatch.setattr(pc, "calc_price", boom)
+    assert pc.main(["price_calc.py", "1"]) == 2
+    assert json.loads(capsys.readouterr().out) == {"error": "internt fel"}
+    assert pc.conn.closed is True
+
+
+def test_main_saknad_order_ger_exit_1_och_stanger_anslutning(pc, capsys):
+    assert pc.main(["price_calc.py", "424242"]) == 1
+    assert json.loads(capsys.readouterr().out) == {"error": "finns inte"}
+    assert pc.conn.closed is True

@@ -1,5 +1,5 @@
 // Tjänstelagret returnerar Result i stället för att kasta fel (se docs/standard.md).
-export type ErrorCode = "not_found" | "invalid_input" | "forbidden" | "conflict";
+export type ErrorCode = "not_found" | "invalid_input" | "forbidden" | "conflict" | "internal";
 
 export type AppError = { code: ErrorCode; message: string };
 

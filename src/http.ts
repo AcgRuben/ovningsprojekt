@@ -6,6 +6,7 @@ const STATUS: Record<AppError["code"], number> = {
   forbidden: 403,
   not_found: 404,
   conflict: 409,
+  internal: 500,
 };
 
 // Alla felsvar har formen { error: { code, message } }.

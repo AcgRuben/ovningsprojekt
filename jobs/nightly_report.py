@@ -12,6 +12,8 @@ antal = 0
 try:
     for oid in order_ids:
         p = calc_price(oid)
+        if p is None:  # ordern raderades efter urvalet
+            continue
         summa += p.total
         antal += 1
 finally:
