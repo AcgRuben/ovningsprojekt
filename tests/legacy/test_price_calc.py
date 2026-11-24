@@ -326,3 +326,15 @@ def test_cli_saknad_order_ger_json_fel_och_exit_1(pc, monkeypatch, capsys):
         exec(body, ns)
     assert e.value.code == 1
     assert json.loads(capsys.readouterr().out) == {"error": "finns inte"}
+
+
+# ------------------------------------------- steg 2: ren logik utan DB
+
+def test_berakna_pris_ar_ren_och_ger_samma_trunkering(pc):
+    p = pc.berakna_pris([(1, D("199.90"))], 10)
+    assert (str(p.net), str(p.vat), str(p.total)) == ("179.91", "44.97", "224.88")
+
+
+def test_berakna_pris_utan_rabatt_och_utan_rader(pc):
+    p = pc.berakna_pris([], None)
+    assert (str(p.net), str(p.vat), str(p.total)) == ("0", "0", "0")

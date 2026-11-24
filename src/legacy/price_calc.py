@@ -25,37 +25,60 @@ def _kapa(x):
     return Decimal(int(x * 100)) / 100
 
 
-def calc_price(order_id):
-    with conn.cursor() as cur:
-        cur.execute("select discount_code from orders where id = %s", (order_id,))
-        rad = cur.fetchone()
-        if rad is None:
-            return None
-        kod = rad[0]
+# --- databasatkomst (inga berakningar) -------------------------------------
 
-        cur.execute("select quantity, unit_price from order_lines where order_id = %s", (order_id,))
-        summa = Decimal(0)
-        for q, p in cur.fetchall():
-            summa = summa + q * p
+def hamta_order(cur, order_id):
+    """Returnerar (rabattkod, [(antal, styckpris), ...]) eller None om ordern saknas."""
+    cur.execute("select discount_code from orders where id = %s", (order_id,))
+    rad = cur.fetchone()
+    if rad is None:
+        return None
+    cur.execute("select quantity, unit_price from order_lines where order_id = %s", (order_id,))
+    return rad[0], cur.fetchall()
 
-        if kod:
-            cur.execute("select percent from discounts where code = %s", (kod,))
-            r = cur.fetchone()
-            if r:
-                summa = summa - summa * r[0] / 100
 
+def hamta_rabatt_procent(cur, kod):
+    """Returnerar rabatt i procent for koden, eller None om den saknas."""
+    cur.execute("select percent from discounts where code = %s", (kod,))
+    r = cur.fetchone()
+    return r[0] if r else None
+
+
+# --- ren prisberakning (ingen I/O) ------------------------------------------
+
+def berakna_pris(rader, rabatt_procent):
+    summa = Decimal(0)
+    for q, p in rader:
+        summa = summa + q * p
+    if rabatt_procent is not None:
+        summa = summa - summa * rabatt_procent / 100
     net = _kapa(summa)
     vat = _kapa(net * MOMS / 100)
-    total = net + vat
+    return Pris(net, vat, net + vat)
 
+
+# --- loggning ----------------------------------------------------------------
+
+def _logga(order_id, total):
     try:
-        f = open(LOGG, "a")
-        f.write("%s %s %s\n" % (datetime.datetime.now().isoformat(), order_id, total))
-        f.close()
-    except:
+        with open(LOGG, "a", encoding="utf-8") as f:
+            f.write("%s %s %s\n" % (datetime.datetime.now().isoformat(), order_id, total))
+    except OSError:
+        # Loggfel far inte stoppa prisberakningen.
         pass
 
-    return Pris(net, vat, total)
+
+def calc_price(order_id):
+    with conn.cursor() as cur:
+        order = hamta_order(cur, order_id)
+        if order is None:
+            return None
+        kod, rader = order
+        rabatt = hamta_rabatt_procent(cur, kod) if kod else None
+
+    pris = berakna_pris(rader, rabatt)
+    _logga(order_id, pris.total)
+    return pris
 
 
 if __name__ == "__main__":
